@@ -174,3 +174,6 @@ cython_debug/
 oauth.json
 raw_headers.txt
 playlists.json
+# YouTube Music login material (contains session cookies) - never commit
+raw_headers.txt
+browser.json

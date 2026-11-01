@@ -4,10 +4,16 @@ from . import cli
 import sys
 import inspect
 
+
 def list_commands(module):
     # include only functions defined in e.g. 'cli' module
-    commands = [name for name, obj in inspect.getmembers(module) if inspect.isfunction(obj)]
+    commands = [
+        name
+        for name, obj in inspect.getmembers(module)
+        if inspect.isfunction(obj) and not name.startswith("_")
+    ]
     return commands
+
 
 available_commands = list_commands(cli)
 
@@ -19,7 +25,7 @@ if len(sys.argv) < 2:
 
 if sys.argv[1] not in available_commands:
     print(
-        f"ERROR: Unknown command '{sys.argv[1]}', see https://github.com/linsomniac/spotify_to_ytmusic"
+        f"ERROR: Unknown command '{sys.argv[1]}', see https://github.com/jeremydwong/spotify_2_youtube"
     )
     print("Available commands: ", ", ".join(available_commands))
     sys.exit(1)

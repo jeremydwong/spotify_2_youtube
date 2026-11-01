@@ -3,11 +3,14 @@
 #  This file is licensed under the MIT license
 #  This file originates from https://github.com/caseychu/spotify-backup
 
+import base64
 import codecs
+import hashlib
 import http.client
 import http.server
 import json
 import re
+import secrets
 import sys
 import time
 import urllib.error
@@ -48,9 +51,22 @@ class SpotifyAPI:
 
     @staticmethod
     def authorize(client_id, scope):
-        """Open a browser for user authorization and return SpotifyAPI instance."""
+        """Open a browser for user authorization and return SpotifyAPI instance.
+
+        Uses the Authorization Code flow with PKCE (Spotify removed the implicit
+        "response_type=token" flow), which needs no client secret.
+        """
         redirect_uri = f"http://127.0.0.1:{SpotifyAPI._SERVER_PORT}/redirect"
-        url = SpotifyAPI._construct_auth_url(client_id, scope, redirect_uri)
+        code_verifier = secrets.token_urlsafe(64)[:128]
+        code_challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+            .rstrip(b"=")
+            .decode()
+        )
+        state = secrets.token_urlsafe(16)
+        url = SpotifyAPI._construct_auth_url(
+            client_id, scope, redirect_uri, code_challenge, state
+        )
         print(f"Open this link if the browser doesn't open automatically: {url}")
         webbrowser.open(url)
 
@@ -59,18 +75,53 @@ class SpotifyAPI:
             while True:
                 server.handle_request()
         except SpotifyAPI._Authorization as auth:
-            return SpotifyAPI(auth.access_token)
+            if auth.state != state:
+                sys.exit("Spotify authorization failed: state mismatch.")
+            access_token = SpotifyAPI._exchange_code(
+                client_id, auth.code, redirect_uri, code_verifier
+            )
+            return SpotifyAPI(access_token)
+        finally:
+            server.server_close()
 
     @staticmethod
-    def _construct_auth_url(client_id, scope, redirect_uri):
+    def _construct_auth_url(client_id, scope, redirect_uri, code_challenge, state):
         return "https://accounts.spotify.com/authorize?" + urllib.parse.urlencode(
             {
-                "response_type": "token",
+                "response_type": "code",
                 "client_id": client_id,
                 "scope": scope,
                 "redirect_uri": redirect_uri,
+                "code_challenge_method": "S256",
+                "code_challenge": code_challenge,
+                "state": state,
             }
         )
+
+    @staticmethod
+    def _exchange_code(client_id, code, redirect_uri, code_verifier):
+        """Exchange an authorization code for an access token (PKCE)."""
+        data = urllib.parse.urlencode(
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": client_id,
+                "code_verifier": code_verifier,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            "https://accounts.spotify.com/api/token",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req) as res:
+                return json.load(res)["access_token"]
+        except urllib.error.HTTPError as e:
+            sys.exit(
+                f"Spotify token exchange failed: {e} {e.read().decode(errors='replace')}"
+            )
 
     def _construct_url(self, url, params):
         """Construct a full API URL."""
@@ -103,37 +154,33 @@ class SpotifyAPI:
 
     class _AuthorizationHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.startswith("/redirect"):
-                self._redirect_to_token()
-            elif self.path.startswith("/token?"):
-                self._handle_token()
-            else:
+            if not self.path.startswith("/redirect"):
                 self.send_error(404)
-
-        def _redirect_to_token(self):
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
-            self.wfile.write(
-                b'<script>location.replace("token?" + location.hash.slice(1));</script>'
+            if "error" in query:
+                self.wfile.write(
+                    b"Spotify authorization failed. You may close this window."
+                )
+                raise SpotifyAPI._AuthorizationError(query["error"][0])
+            self.wfile.write(b"Thanks! You may now close this window.")
+            raise SpotifyAPI._Authorization(
+                query.get("code", [""])[0], query.get("state", [""])[0]
             )
-
-        def _handle_token(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(
-                b"<script>close()</script>Thanks! You may now close this window."
-            )
-            access_token = re.search("access_token=([^&]*)", self.path).group(1)
-            raise SpotifyAPI._Authorization(access_token)
 
         def log_message(self, format, *args):
             pass
 
     class _Authorization(Exception):
-        def __init__(self, access_token):
-            self.access_token = access_token
+        def __init__(self, code, state):
+            self.code = code
+            self.state = state
+
+    class _AuthorizationError(Exception):
+        pass
 
 
 def fetch_user_data(spotify, dump):
@@ -158,6 +205,30 @@ def fetch_user_data(spotify, dump):
         playlists.extend(playlist_data)
 
     return playlists, liked_albums
+
+
+def fetch_playlist(spotify, playlist_id):
+    """Fetch one playlist (with all its tracks) by ID.
+
+    Works for your own playlists and for public or shared playlists of other
+    users (e.g. a family member's playlist link).
+    """
+    playlist = spotify.get(f"playlists/{playlist_id}")
+    #  Newer API responses name the track list "items", older ones "tracks".
+    ref = playlist.get("tracks") or playlist.get("items") or {}
+    href = ref.get("href") if isinstance(ref, dict) else None
+    playlist["tracks"] = spotify.list(
+        href or f"playlists/{playlist_id}/tracks", {"limit": 100}
+    )
+    return playlist
+
+
+def authorize_default():
+    """Log in to Spotify (read-only) using the browser."""
+    return SpotifyAPI.authorize(
+        client_id="5c098bcc800e45d49e476265bc9b6934",
+        scope="playlist-read-private playlist-read-collaborative user-library-read",
+    )
 
 
 def write_to_file(file, format, playlists, liked_albums):
@@ -190,14 +261,7 @@ def write_to_file(file, format, playlists, liked_albums):
 
 def main(dump="playlists,liked", format="json", file="playlists.json", token=""):
     print("Starting backup...")
-    spotify = (
-        SpotifyAPI(token)
-        if token
-        else SpotifyAPI.authorize(
-            client_id="5c098bcc800e45d49e476265bc9b6934",
-            scope="playlist-read-private playlist-read-collaborative user-library-read",
-        )
-    )
+    spotify = SpotifyAPI(token) if token else authorize_default()
 
     playlists, liked_albums = fetch_user_data(spotify, dump)
     write_to_file(file, format, playlists, liked_albums)

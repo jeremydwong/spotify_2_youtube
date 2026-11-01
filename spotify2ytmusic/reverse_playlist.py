@@ -7,17 +7,24 @@ from argparse import ArgumentParser
 
 
 def reverse_playlist(input_file="playlists.json", verbose=True, replace=False) -> int:
-    if os.path.exists(input_file) and not replace:
+    if not os.path.exists(input_file):
+        if verbose:
+            print(f"Input file {input_file!r} does not exist, exiting...")
+        return 1
+
+    root, ext = os.path.splitext(input_file)
+    backup_file = f"{root}_backup{ext or '.json'}"
+    if os.path.exists(backup_file) and not replace:
         if verbose:
             print(
-                "Output file already exists and no replace argument detected, exiting..."
+                f"Backup file {backup_file!r} already exists and no replace argument detected, exiting..."
             )
         return 1
 
-    print("Backing up file...")
-    shutil.copyfile(input_file, input_file.split(".")[0] + "_backup.json")
+    print(f"Backing up file to {backup_file}...")
+    shutil.copyfile(input_file, backup_file)
     # Load the JSON file
-    with open(input_file, "r") as file:
+    with open(input_file, "r", encoding="utf-8") as file:
         if verbose:
             print("Loading initial JSON file...")
         data = json.load(file)
@@ -35,8 +42,8 @@ def reverse_playlist(input_file="playlists.json", verbose=True, replace=False) -
     if verbose:
         print("Writing to file... (this can take a while)")
     # Write the modified JSON back to the file
-    with open(input_file, "w") as file:
-        json.dump(data2, file)
+    with open(input_file, "w", encoding="utf-8") as file:
+        json.dump(data2, file, ensure_ascii=False)
 
     if verbose:
         print("Done!")

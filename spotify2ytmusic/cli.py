@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import sys
 from argparse import ArgumentParser
 import pprint
@@ -186,10 +187,10 @@ def load_liked():
             help="Algorithm to use for search (0 = exact, 1 = extended, 2 = approximate)",
         )
         parser.add_argument(
-            "--reverse-playlist",
+            "--no-reverse-playlist",
             action="store_true",
-            help="Reverse playlist on load, normally this is not set for liked songs as "
-            "they are added in the opposite order from other commands in this program.",
+            help="Do not reverse liked songs on load.  By default they are liked oldest-first "
+            "so YTMusic (which shows the most recently liked first) matches Spotify's order.",
         )
 
         return parser.parse_args()
@@ -200,7 +201,7 @@ def load_liked():
         backend.iter_spotify_playlist(
             None,
             spotify_encoding=args.spotify_playlists_encoding,
-            reverse_playlist=args.reverse_playlist,
+            reverse_playlist=not args.no_reverse_playlist,
         ),
         None,
         args.dry_run,
@@ -249,10 +250,15 @@ def copy_playlist():
             help="Algorithm to use for search (0 = exact, 1 = extended, 2 = approximate)",
         )
         parser.add_argument(
+            "--reverse-playlist",
+            action="store_true",
+            help="Reverse playlist on load.  By default tracks are added in Spotify order, "
+            "and since YTMusic appends to the end, the playlist ends up in the same order.",
+        )
+        parser.add_argument(
             "--no-reverse-playlist",
             action="store_true",
-            help="Do not reverse playlist on load, regular playlists are reversed normally "
-            "so they end up in the same order as on Spotify.",
+            help=argparse.SUPPRESS,  # deprecated: not reversing is now the default
         )
         parser.add_argument(
             "--privacy",
@@ -269,7 +275,7 @@ def copy_playlist():
         track_sleep=args.track_sleep,
         dry_run=args.dry_run,
         spotify_playlists_encoding=args.spotify_playlists_encoding,
-        reverse_playlist=not args.no_reverse_playlist,
+        reverse_playlist=args.reverse_playlist,
         privacy_status=args.privacy,
     )
 
@@ -304,10 +310,15 @@ def copy_all_playlists():
             help="Algorithm to use for search (0 = exact, 1 = extended, 2 = approximate)",
         )
         parser.add_argument(
+            "--reverse-playlist",
+            action="store_true",
+            help="Reverse playlist on load.  By default tracks are added in Spotify order, "
+            "and since YTMusic appends to the end, the playlist ends up in the same order.",
+        )
+        parser.add_argument(
             "--no-reverse-playlist",
             action="store_true",
-            help="Do not reverse playlist on load, regular playlists are reversed normally "
-            "so they end up in the same order as on Spotify.",
+            help=argparse.SUPPRESS,  # deprecated: not reversing is now the default
         )
         parser.add_argument(
             "--privacy",
@@ -322,9 +333,129 @@ def copy_all_playlists():
         track_sleep=args.track_sleep,
         dry_run=args.dry_run,
         spotify_playlists_encoding=args.spotify_playlists_encoding,
-        reverse_playlist=not args.no_reverse_playlist,
+        reverse_playlist=args.reverse_playlist,
         privacy_status=args.privacy,
     )
+
+
+def reorder_playlists():
+    """
+    Reorder YTMusic playlists in place to match the Spotify order (fixes playlists
+    copied by older versions, which reversed them).  Nothing is added or removed.
+    """
+    parser = ArgumentParser()
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only report how many moves each playlist needs.",
+    )
+    parser.add_argument(
+        "--spotify-playlists-encoding",
+        default="utf-8",
+        help="The encoding of the `playlists.json` file.",
+    )
+    args = parser.parse_args()
+    backend.reorder_all_playlists(
+        dry_run=args.dry_run, spotify_playlists_encoding=args.spotify_playlists_encoding
+    )
+
+
+def _load_spotify_songs(spec: str, playlists_file: str, encoding: str, fetch: bool):
+    """Spotify tracks for a playlist given by ID, URL, URI or name.
+
+    Looks in the backup file first (unless `fetch`), then fetches the playlist
+    live from Spotify (opens a browser to log in, read-only).
+    """
+    import os
+
+    pl_id = backend.parse_spotify_playlist_id(spec)
+    if not fetch and os.path.exists(playlists_file):
+        for pl in backend.load_playlists_json(playlists_file, encoding)["playlists"]:
+            if pl.get("id") == pl_id or pl.get("name") == spec:
+                print(f"== Spotify playlist: {pl.get('name')} (from {playlists_file})")
+                return backend.songs_from_spotify_tracks(pl["tracks"])
+
+    from . import spotify_backup
+
+    print(
+        f"Fetching Spotify playlist {pl_id} live (a browser window will open to log in)..."
+    )
+    pl = spotify_backup.fetch_playlist(spotify_backup.authorize_default(), pl_id)
+    print(f"== Spotify playlist: {pl.get('name')} (fetched from Spotify)")
+    return backend.songs_from_spotify_tracks(pl["tracks"])
+
+
+def reorder_playlist():
+    """
+    Reorder ONE YTMusic playlist in place so it follows the order of a Spotify
+    playlist.  Nothing is added or removed.
+    """
+    parser = ArgumentParser(description=reorder_playlist.__doc__)
+    parser.add_argument(
+        "spotify_playlist",
+        help="Spotify playlist: link (https://open.spotify.com/playlist/...), ID, "
+        "or name as it appears in playlists.json.",
+    )
+    parser.add_argument(
+        "ytmusic_playlist",
+        help="YTMusic playlist: link (https://music.youtube.com/playlist?list=...), "
+        "ID, or name.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the planned order and number of moves without changing anything.",
+    )
+    parser.add_argument(
+        "--only-if-reversed",
+        action="store_true",
+        help="Only reorder if the playlist is mostly in reverse order.",
+    )
+    parser.add_argument(
+        "--fetch",
+        action="store_true",
+        help="Always fetch the Spotify playlist live instead of using playlists.json.",
+    )
+    parser.add_argument("--playlists-file", default="playlists.json")
+    parser.add_argument(
+        "--spotify-playlists-encoding",
+        default="utf-8",
+        help="The encoding of the `playlists.json` file.",
+    )
+    parser.add_argument(
+        "--auth",
+        default=None,
+        help="YTMusic credentials file (default: oauth.json).  Use a separate file "
+        "to work on another person's YTMusic account.",
+    )
+    args = parser.parse_args()
+
+    songs = _load_spotify_songs(
+        args.spotify_playlist,
+        args.playlists_file,
+        args.spotify_playlists_encoding,
+        args.fetch,
+    )
+    if not songs:
+        print("ERROR: The Spotify playlist has no tracks (or could not be read).")
+        sys.exit(1)
+    backend.reorder_one_playlist(
+        songs,
+        args.ytmusic_playlist,
+        dry_run=args.dry_run,
+        only_if_reversed=args.only_if_reversed,
+        auth_file=args.auth,
+    )
+
+
+def login():
+    """
+    Log in to YouTube Music using the cookies of a browser where you are already
+    signed in (no DevTools needed).  Example: s2yt_login --browser chrome
+    """
+    from . import ytmusic_login
+
+    sys.exit(ytmusic_login.main(sys.argv[1:]))
 
 
 def gui():
