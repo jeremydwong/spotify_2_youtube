@@ -103,6 +103,15 @@ class TestLogin(unittest.TestCase):
         h = L.build_headers({"SAPISID": "a", "__Secure-3PAPISID": "b"})
         self.assertEqual(determine_auth_type(CaseInsensitiveDict(h)), AuthType.BROWSER)
 
+    def test_no_terminal_asks_for_account_flag(self):
+        accounts = [(0, "A"), (1, "B")]
+        with patch.object(L.sys, "stdin") as stdin:
+            stdin.isatty.return_value = False
+            with self.assertRaises(L.LoginError) as cm:
+                L._ask_account(accounts)
+        self.assertIn("--account", str(cm.exception))
+        self.assertIn("1: B", str(cm.exception))
+
     def test_extractor_error_is_explained(self):
         with patch(
             "yt_dlp.cookies.extract_cookies_from_browser",

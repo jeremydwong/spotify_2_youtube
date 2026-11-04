@@ -228,11 +228,21 @@ def login(
 
 
 def _ask_account(accounts: List[Tuple[int, str]]) -> int:
+    listing = "\n".join(f"  {i}: {label}" for i, label in accounts)
+    no_prompt = LoginError(
+        f"Several Google accounts are signed in:\n{listing}\n"
+        "Choose one by running again with --account NUMBER, e.g. --account "
+        f"{accounts[0][0]}"
+    )
+    if not sys.stdin or not sys.stdin.isatty():
+        raise no_prompt
     print("Several Google accounts are signed in:")
-    for i, label in accounts:
-        print(f"  {i}: {label}")
+    print(listing)
     while True:
-        answer = input("Which account should be used? Number: ").strip()
+        try:
+            answer = input("Which account should be used? Number: ").strip()
+        except EOFError:
+            raise no_prompt
         if answer.isdigit() and int(answer) in dict(accounts):
             return int(answer)
         print("Please type one of the numbers above.")
