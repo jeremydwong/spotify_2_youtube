@@ -34,6 +34,9 @@ as in upstream.
   login straight from a browser where you're already signed in, lets you pick the Google
   account if several are signed in, checks that the login works, and saves `oauth.json`
   as a private file. See [Login to YTMusic](#login-to-ytmusic). (Phase 1 of the roadmap.)
+- **GUI "Log in from browser" button.** The GUI's first tab now has a browser drop-down
+  and a button that does the same login; if several Google accounts are signed in, a small
+  window asks which one to use.
 - **`s2yt_reorder_playlist <spotify> <ytmusic>`** reorders *one* YouTube Music playlist to
   match a Spotify playlist. Both can be given as links, and the Spotify playlist can be fetched
   live, e.g. a public or shared playlist from a family member. Use `--auth` to work on a
@@ -86,7 +89,7 @@ Background research (as of late 2026):
 **Phase 1: `s2yt_login --browser <firefox|chrome|edge|brave|safari|...>`** (the main fix).
 ✅ *Implemented* in `spotify2ytmusic/ytmusic_login.py`: cookie reading, account detection,
 validation, and saving with `0600` permissions. Verified against a live account with two
-signed-in Google accounts. Still to do: the GUI button.
+signed-in Google accounts. The GUI button is implemented too (step 6).
 
 1. Read the `.youtube.com` cookies from the user's browser using yt-dlp's extractor
    (an optional dependency: `pip install spotify2ytmusic[login]`).
@@ -102,7 +105,8 @@ signed-in Google accounts. Still to do: the GUI button.
    specific message ("not signed in to music.youtube.com in Chrome", "Keychain access
    denied", …) instead of a stack trace.
 5. Write `oauth.json` with `0600` permissions, and never print cookie values.
-6. GUI: replace the "Login to YT Music" tab with a browser drop-down and a *Log in* button.
+6. ✅ GUI: the "Login to YT Music" tab has a browser drop-down, a *Log in from browser*
+   button, a login status line, and an account chooser window.
 
 **Phase 2: built-in login window (fallback for Windows + Chrome, or no supported browser)**
 
@@ -239,7 +243,7 @@ python3 spotify2ytmusic/ytmusic_credentials.py
 When you launch the GUI in the next step, it will automatically detect this file and log in to YouTube Music without requiring manual input. You’ll see a log message confirming this:
 
 ```
-File detected, auto login
+Saved YT Music login found.
 ```
 
 The GUI will **ignore the 'Login to YT Music' tab** and jump straight to the 'Spotify Backup' tab.
@@ -268,6 +272,9 @@ python3 -m spotify2ytmusic gui
 
 Once the GUI is running, you can:
 
+- **Log in to YT Music**: on the first tab, sign in to music.youtube.com in your browser,
+  choose that browser, and press **Log in from browser**. No DevTools needed. (Needs
+  `pip install yt-dlp`. On Windows, use Firefox, because Chrome/Edge logins can't be read there.)
 - **Backup Your Spotify Playlists**: Save your playlists and liked songs into the file `playlists.json`.
 - **Load Liked Songs**: Migrate your Spotify liked songs to YouTube Music.
 - **List Playlists**: View your playlists and their details.

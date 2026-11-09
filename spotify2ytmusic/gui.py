@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import os
-import subprocess
 import sys
 import threading
 import json
@@ -11,7 +10,10 @@ from tkinter import ttk
 from . import cli
 from . import backend
 from . import spotify_backup
+from . import ytmusic_login
 from typing import Callable
+
+OAUTH_FILE = "oauth.json"
 
 
 def create_label(parent: tk.Frame, text: str, **kwargs) -> tk.Label:
@@ -24,10 +26,10 @@ def create_label(parent: tk.Frame, text: str, **kwargs) -> tk.Label:
     Returns:
         tk.Label: The label created.
     """
+    kwargs.setdefault("font", ("Helvetica", 14))
     return tk.Label(
         parent,
         text=text,
-        font=("Helvetica", 14),
         background="#26242f",
         foreground="white",
         **kwargs,
@@ -128,11 +130,33 @@ class Window:
         # tab1
         create_label(
             self.tab1,
-            text="Welcome to Spotify to YT Music!\nTo start, you need to login to YT Music.",
+            text="Welcome to Spotify to YT Music!\n"
+            "To start, sign in to music.youtube.com in your browser,\n"
+            "then press the button below. Your login is read from the browser:\n"
+            "no developer tools or copy/paste needed.",
         ).pack(anchor=tk.CENTER, expand=True)
-        create_button(self.tab1, text="Login", command=self.yt_login).pack(
-            anchor=tk.CENTER, expand=True
+        self.login_status = create_label(self.tab1, text="")
+        self.login_status.pack(anchor=tk.CENTER, expand=True)
+        browser_row = ttk.Frame(self.tab1)
+        browser_row.pack(anchor=tk.CENTER, expand=True)
+        create_label(browser_row, text="Browser:").pack(side=tk.LEFT, padx=5)
+        self.var_browser = tk.StringVar(value=ytmusic_login.SUPPORTED_BROWSERS[0])
+        menu_browser = tk.OptionMenu(
+            browser_row, self.var_browser, *ytmusic_login.SUPPORTED_BROWSERS
         )
+        menu_browser.config(background="#696969", foreground="#ffffff", border=1)
+        menu_browser.pack(side=tk.LEFT, padx=5)
+        self.login_button = create_button(
+            self.tab1, text="Log in from browser", command=self.yt_login
+        )
+        self.login_button.pack(anchor=tk.CENTER, expand=True)
+        create_label(
+            self.tab1,
+            text='On macOS you may be asked to allow access to "Chrome Safe Storage": '
+            "click Allow.\nOn Windows, Chrome/Edge logins can't be read; use Firefox, "
+            "or the manual method in the README.",
+            font=("Helvetica", 11),
+        ).pack(anchor=tk.CENTER, expand=True)
 
         # tab2
 
@@ -288,52 +312,95 @@ class Window:
         self.tabControl.select(next_tab)
         print()
 
+    def update_login_status(self) -> None:
+        if os.path.exists(OAUTH_FILE):
+            text = f"Status: logged in ({OAUTH_FILE} found). Log in again to switch account."
+        else:
+            text = "Status: not logged in."
+        self.login_status.config(text=text)
+
     def yt_login(self, auto=False) -> None:
-        """Logs in to YT Music. If the oauth.json file is not found, it opens a new console window to run the 'ytmusicapi oauth' command.
+        """Logs in to YT Music by reading the login cookies from a browser.
 
         Args:
-            auto (bool, optional): Weather to automatically login using the oauth.json file. Defaults to False.
+            auto (bool, optional): Only report whether a saved login exists
+                (used at startup).  Defaults to False.
         """
+        self.update_login_status()
+        if auto:
+            if os.path.exists(OAUTH_FILE):
+                print("Saved YT Music login found.")
+                self.tabControl.select(self.tab2)
+            return
+
+        browser = self.var_browser.get()
+        self.login_button.config(state=tk.DISABLED)
 
         def run_in_thread():
-            if os.path.exists("oauth.json"):
-                print("File detected, auto login")
-            elif auto:
-                print("No file detected. Manual login required")
-                return
+            try:
+                ytmusic_login.login(browser, OAUTH_FILE, choose=self._choose_account)
+            except ytmusic_login.LoginError as e:
+                print(f"ERROR: {e}")
+            except Exception as e:  # keep the GUI alive on unexpected errors
+                print(f"ERROR: login failed: {e}")
             else:
-                print("File not detected, login required")
-
-                # Open a new console window to run the command
-                if os.name == "nt":  # If the OS is Windows
-                    try:
-                        process = subprocess.Popen(
-                            ["ytmusicapi", "oauth"],
-                            creationflags=subprocess.CREATE_NEW_CONSOLE,
-                        )
-                    except FileNotFoundError as e:
-                        print(
-                            f"ERROR: Unable to run 'ytmusicapi oauth'.  Is ytmusicapi installed?  Perhaps try running 'pip install ytmusicapi' Exception: {e}"
-                        )
-                        sys.exit(1)
-                    process.communicate()
-                else:  # For Unix and Linux
-                    try:
-                        subprocess.call(
-                            "python3 -m ytmusicapi oauth",
-                            shell=True,
-                            stdout=subprocess.PIPE,
-                        )
-                    except Exception as e:
-                        print(f"An error occurred: {e}")
-
-
-            self.tabControl.select(self.tab2)
+                self.root.after(0, lambda: self.tabControl.select(self.tab2))
+            finally:
+                self.root.after(0, self.update_login_status)
+                self.root.after(0, lambda: self.login_button.config(state=tk.NORMAL))
             print()
 
-        # Run the function in a separate thread
-        th = threading.Thread(target=run_in_thread)
-        th.start()
+        threading.Thread(target=run_in_thread, daemon=True).start()
+
+    def _choose_account(self, accounts) -> int:
+        """Called from the login thread: ask on the GUI thread and wait."""
+        done = threading.Event()
+        result = {}
+        self.root.after(0, lambda: self._account_dialog(accounts, result, done))
+        done.wait()
+        if "authuser" not in result:
+            raise ytmusic_login.LoginError("Login cancelled.")
+        return result["authuser"]
+
+    def _account_dialog(self, accounts, result: dict, done: threading.Event) -> None:
+        win = tk.Toplevel(self.root)
+        win.title("Choose a Google account")
+        win.config(background="#26242f")
+        win.transient(self.root)
+        create_label(
+            win,
+            text="Several Google accounts are signed in.\nWhich one should be used?",
+        ).pack(padx=20, pady=10)
+        choice = tk.IntVar(value=accounts[0][0])
+        for authuser, label in accounts:
+            tk.Radiobutton(
+                win,
+                text=label,
+                variable=choice,
+                value=authuser,
+                font=("Helvetica", 14),
+                background="#26242f",
+                foreground="white",
+                selectcolor="#121212",
+                anchor="w",
+            ).pack(fill=tk.X, padx=20)
+
+        def finish(ok: bool):
+            if ok:
+                result["authuser"] = choice.get()
+            win.destroy()
+            done.set()
+
+        buttons = ttk.Frame(win)
+        buttons.pack(pady=10)
+        create_button(
+            buttons, text="Use this account", command=lambda: finish(True)
+        ).pack(side=tk.LEFT, padx=5)
+        create_button(buttons, text="Cancel", command=lambda: finish(False)).pack(
+            side=tk.LEFT, padx=5
+        )
+        win.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        win.grab_set()
 
     def load_write_settings(self, action: int) -> None:
         """Loads or writes the settings to the settings.json file.
